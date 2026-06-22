@@ -71,7 +71,7 @@ PORTFOLIO_BUCKET = "gracia-portfolios"
 SES_SENDER       = "agent@agent.graciagroup.com"
 CHAD_EMAIL       = "cgracia@rainmakersecurities.com"
 KATE_EMAIL       = "kate@graciagroup.com"
-BEDROCK_MODEL    = "us.anthropic.claude-haiku-4-5"
+BEDROCK_MODEL    = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 DRY_RUN          = os.environ.get("DRY_RUN", "true").lower() == "true"
 BRAVE_API_KEY    = os.environ.get("BRAVE_API_KEY", "")
 
