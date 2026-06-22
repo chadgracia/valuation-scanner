@@ -657,12 +657,15 @@ def lambda_handler(event, context):
     deals_data     = load_s3_json(CACHE_BUCKET, "deals.json",         {"deals": []})
     companies_data = load_s3_json(CACHE_BUCKET, "companies.json",     {"companies": []})
     seen_data      = load_s3_json(CACHE_BUCKET, "seen-articles.json", {"urls": []})
+    screened_data  = load_s3_json(CACHE_BUCKET, "screened-urls.json", {"by_company": {}})
     held_ids       = load_held_company_ids()
 
     all_deals     = deals_data.get("deals", [])
     all_companies = companies_data.get("companies", [])
     seen_urls     = set(seen_data.get("urls", []))
     new_seen_urls = set()
+    screened_by_company = screened_data.get("by_company", {})  # {company_id(str): [brave urls already screened]}
+    screened_dirty = False
 
     company_index = {c["id"]: c for c in all_companies if c.get("id") is not None}
 
@@ -684,7 +687,26 @@ def lambda_handler(event, context):
 
         results    = search_web(co_name)
         co_summary = (record or {}).get("description") or ""
-        analysis   = analyze_results(co_name, results, company_summary=co_summary) if results else {"found": False}
+
+        # GATE: only spend a Claude call when Brave surfaced a URL we have not
+        # already screened for THIS company. Same articles as last run -> skip
+        # the model (the cheap stale-clear above still runs). DRY_RUN bypasses
+        # the gate so a dry run stays a full, complete harvest.
+        current_urls = {r["url"] for r in results if r.get("url")}
+        prev_urls    = set(screened_by_company.get(str(co_id), []))
+        new_urls     = current_urls - prev_urls
+        if results and (DRY_RUN or new_urls):
+            analysis = analyze_results(co_name, results, company_summary=co_summary)
+        else:
+            if results:
+                logger.info(f"  no new URLs ({len(current_urls)} already screened) - skipping model")
+            analysis = {"found": False}
+        # Remember every URL Brave showed for this company (union; live runs only).
+        if current_urls and not DRY_RUN:
+            merged = prev_urls | current_urls
+            if merged != prev_urls:
+                screened_by_company[str(co_id)] = sorted(merged)
+                screened_dirty = True
 
         desired, kind = None, "none"
         if analysis.get("found") and passes_date_gate(analysis):
@@ -744,6 +766,11 @@ def lambda_handler(event, context):
         save_s3_json(CACHE_BUCKET, "seen-articles.json",
                      {"urls": list(seen_urls | new_seen_urls)})
         logger.info(f"Saved {len(new_seen_urls)} new URLs to seen-articles.json")
+
+    if screened_dirty and not DRY_RUN:
+        save_s3_json(CACHE_BUCKET, "screened-urls.json",
+                     {"by_company": screened_by_company})
+        logger.info(f"Saved screened-URL memory for {len(screened_by_company)} companies")
 
     # Summary email -> Chad and Kate
     dry_tag = "  [DRY RUN - nothing written to CRM]" if DRY_RUN else ""
