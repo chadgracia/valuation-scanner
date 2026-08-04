@@ -94,6 +94,9 @@ CATALYST_FIELD = "custom_label_3999603"
 
 # LR fields are READ to gate the round-close lag line - never written here.
 LR_DATE_FIELD = "custom_label_3826032"
+LR_VAL_FIELD = "custom_label_3790429"
+LR_PPS_FIELD = "custom_label_3064363"
+LR_SERIES_FIELD = "custom_label_3914626"
 
 # Marker suffix on a round-close line so the self-clear pass can recognise it.
 PENDING_MARKER = "- details pending"
@@ -747,6 +750,13 @@ def lambda_handler(event, context):
             "valuation_basis": analysis.get("valuation_basis"),
             "raise_amount": None if is_clear else (fmt_usd(analysis.get("raise_amount_usd")) if analysis.get("raise_amount_usd") else None),
             "pps": None if is_clear else (fmt_usd(analysis.get("pps_usd")) if analysis.get("pps_usd") else None),
+            "valuation_usd": None if is_clear else analysis.get("valuation_usd"),
+            "raise_amount_usd": None if is_clear else analysis.get("raise_amount_usd"),
+            "pps_usd": None if is_clear else analysis.get("pps_usd"),
+            "cur_lr_val": get_cf(record, LR_VAL_FIELD),
+            "cur_lr_pps": get_cf(record, LR_PPS_FIELD),
+            "cur_lr_date": get_cf(record, LR_DATE_FIELD),
+            "cur_lr_series": get_cf(record, LR_SERIES_FIELD),
         })
         catalyst_writes.append((co_id, co_name, final_value))
         logger.info(f"  Catalyst: {final_value!r}")
@@ -771,6 +781,50 @@ def lambda_handler(event, context):
         save_s3_json(CACHE_BUCKET, "screened-urls.json",
                      {"by_company": screened_by_company})
         logger.info(f"Saved screened-URL memory for {len(screened_by_company)} companies")
+
+    # Queue of actionable valuation updates: confirmed, closed rounds only.
+    if not DRY_RUN:
+        try:
+            pending = load_s3_json(CACHE_BUCKET, "pending-updates.json", {"items": {}})
+            items = pending.get("items") or {}
+            added = 0
+            for a in alerts:
+                if a.get("is_clear"):
+                    continue
+                if a.get("event_type") != "round_closed":
+                    continue
+                if a.get("confirmed") is not True:
+                    continue
+                if not a.get("valuation_usd"):
+                    continue
+                key = str(a.get("url") or "") + "|" + str(a.get("co_id") or "")
+                if key in items:
+                    continue
+                items[key] = {
+                    "company": a.get("company"),
+                    "co_id": a.get("co_id"),
+                    "headline": a.get("headline"),
+                    "url": a.get("url"),
+                    "date": a.get("date"),
+                    "catalyst": a.get("catalyst"),
+                    "round_series": a.get("round_series"),
+                    "valuation_usd": a.get("valuation_usd"),
+                    "valuation_basis": a.get("valuation_basis"),
+                    "raise_amount_usd": a.get("raise_amount_usd"),
+                    "pps_usd": a.get("pps_usd"),
+                    "cur_lr_val": a.get("cur_lr_val"),
+                    "cur_lr_pps": a.get("cur_lr_pps"),
+                    "cur_lr_date": a.get("cur_lr_date"),
+                    "cur_lr_series": a.get("cur_lr_series"),
+                    "found_at": now.strftime("%Y-%m-%d"),
+                    "status": "pending",
+                }
+                added += 1
+            if added:
+                save_s3_json(CACHE_BUCKET, "pending-updates.json", {"items": items})
+            logger.info(f"Update queue: {added} new, {len(items)} total")
+        except Exception as e:
+            logger.error(f"Failed to write pending-updates.json: {e}")
 
     # Summary email -> Chad and Kate
     dry_tag = "  [DRY RUN - nothing written to CRM]" if DRY_RUN else ""
