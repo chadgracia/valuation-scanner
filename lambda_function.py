@@ -393,6 +393,7 @@ Return found=false if ANY of these apply:
 
 IPO chatter (timing, "exploring an IPO", "charting a path to IPO") IS acceptable, but only from a reputable primary news outlet - not an analysis/opinion aggregator or SEO/contributor hub.
 Only state figures explicitly present in the result. Never infer or estimate a valuation or amount; if a figure is not stated, omit it.
+CRITICAL: the AMOUNT RAISED and the VALUATION are different numbers. "Raised $1B" means raise_amount_usd = 1000000000 and says NOTHING about valuation_usd. Put a figure in valuation_usd ONLY if the source explicitly calls it a valuation (e.g. "at a $10B valuation", "valuing the company at"). If only the raise amount is stated, valuation_usd must be null.
 
 Output ONLY the JSON object, starting immediately at the opening brace. No reasoning, no preface, no markdown:
 {{
@@ -854,9 +855,15 @@ def lambda_handler(event, context):
                         s = str(a["round_series"])
                         det.append(s if s.lower().startswith("series") else f"Series {s}")
                     if a["valuation"]:    det.append(f"val {a['valuation']} ({a['valuation_basis'] or 'basis?'})")
-                    if a["raise_amount"]: det.append(f"raise {a['raise_amount']}")
                     if a["pps"]:          det.append(f"PPS {a['pps']}")
-                    lines.append("  FOR KATE -> update LR column: " + (", ".join(det) if det else "details pending"))
+                    if det:
+                        kate_line = "  FOR KATE -> update LR column: " + ", ".join(det)
+                        if a["raise_amount"]:
+                            kate_line += f"   [raised {a['raise_amount']} - context only, NOT a valuation]"
+                        lines.append(kate_line)
+                    else:
+                        ctx = f"raised {a['raise_amount']}" if a["raise_amount"] else "terms undisclosed"
+                        lines.append(f"  FOR KATE -> valuation NOT disclosed ({ctx}). Do NOT enter the raise amount in the LR column - wait for a stated valuation or PPS.")
             lines += [f"  Pipeline: {pipeline_url(a['co_id'])}", ""]
     else:
         lines.append("No new catalysts found today.")
